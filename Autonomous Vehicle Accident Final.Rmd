@@ -1,0 +1,394 @@
+---
+title: "Stats 6500 Autonomous Vehicle Accidents - Project Proposal"
+author: Charmchi Toosi, Shahrzad; Chu, Yue; Heider, Jennifer E.; Lin, Yue; Smillie,
+  Katie;
+date:  \today
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set( echo=FALSE, warning = FALSE, message = FALSE)
+
+#load packages
+packages <- c("readr","tidyverse","plyr","dplyr","stats","tidyr","car" #data processing
+              ,"ggplot2","ggforce","scales","lubridate" #plot
+              ,"knitr","kableExtra" #table
+              ,"tm","tidytext","SnowballC","pdftools","swirl","knitr" #web scraping and text analysis
+              ,"rvest","stringr","staplr" #pdf data processing
+              ,"reticulate" #python
+              ,"MASS","ISLR","class", "stringr", "tm", "RandomForest", "tree" #ML
+              )
+
+#new.packages <- packages[!(packages %in% installed.packages()[,"Package"])]
+#if(length(new.packages)) install.packages(new.packages)
+suppressMessages(lapply(packages, require, character.only = TRUE))
+
+# other functions
+get.element <- function(list, n){ #get nth element in the list
+         sapply(list, `[`, n)}
+
+substr.rml<-function(x,n){ #remove last n characters
+  substr(x,1,nchar(x)-n)
+}
+
+to.df<-function(x,colname=c("var","value")){
+  a<-data.frame(x)
+  output<-data.frame(rownames(a),a[,1])
+  colnames(output)<-colname
+  return(output)
+}
+
+```
+
+<!---
+# Background
+
+- Development of autopilot features of cars.
+- Debates around the technology and concerns on safety of autopilot technology.
+--->
+
+# Key research question
+
+In this study, we are interested to evaluate the safety of autonomous vehicles using data from autonomous vehicle collision reports. 
+
+# Data
+
+**Data source**
+
+The California DMV autonomous vehicle collision accident reports were publicly available via [DMV website](https://www.dmv.ca.gov/portal/vehicle-industry-services/autonomous-vehicles/autonomous-vehicle-collision-reports/). A compiled dataset with 250 collision accidents occurred in California from Jan.2016 to Feb. 2020 was found on [github](https://github.com/Jcressey10/Thesis). 
+
+```{r}
+# Read in dataset
+urlfile="https://raw.githubusercontent.com/Jcressey10/Thesis/master/AutonomousD.csv"
+#auto<-read.csv(url(urlfile),stringsAsFactors = FALSE) #TRUE
+auto<-read_csv(url(urlfile)) #TRUE
+#dim(auto)
+```
+
+**Key variables of interests**
+
+18 variables were available in the compiled dataset, as shown in the table below (some variables names were renamed for the ease of presentation and coding). Two variables, injury and other Vehicle, were completely missing and were excluded from analysis. Weather, lighting, road conditions, and unusual conditions each had 67 missing observations. The team will try to acquire and re-extract these information from the original collision accident reports to fill in the missing values. The variable `car_type` was further split into vehicle year, make, and model, and the `date` variable were split into year, month, and day for analysis. 
+
+The variable `car_type` includes information on vehicle year, make, and model. This was split into 3 separate columns for analysis. Misspelling and case differences in `lighting` and `stopped_av` were also corrected. We also took the variable and split into .  
+
+
+```{r}
+#rename columns (to make them easier to work with in R and to make more appropriate names for some)
+
+colnames(auto) <- c("date","address","company","car_type","autonomous_engaged","time","weather","road_cond","lighting","unusual_cond","stopped_av","other vehicle","stopped_nonav","damage","injury","explanation","damage_type","error")
+# rename columns first so that it's consistent through out the document. 
+
+#variable labels and examples
+var.lab <- data.frame(
+  # Variable = c("Date","Address","Car.type","Company","Autonomous","Time","Weather"
+  #                 ,"Road.condition","Lighting","Unusual.conditions","Stop.moving1"
+  #                 ,"Stop.moving2","Other.vehicle","Damage","Significance","Injury"
+  #                 ,"Explanation","Error"),
+  variable = colnames(auto),
+  label = c("Date of accident","Address of accident","Make of car","Manufacture",
+            "Whether autonomous vehicle is engaged(1=yes,0=no)","Time of accident",
+            "Weather condition when the accident occurred","Road condition","Lighting condition",
+            "Other unusual conditions","Whether the vehicle stopped or was moving",
+            "Whether the other vehicle stopped or was moving","[All N/A]",
+            "How severe the damage was", "Effect on human","[All N/A]",
+            "Type of collision","AV or non-AV fault"))
+
+#variable examples
+var.ex<-to.df(apply(auto, 2, function(x) unique(x)[1]),colname = c("variable","example"))
+
+#investigate variable types
+#str(auto) - format it into tables
+var.type<- to.df(apply(auto, 2, function(x) class(x)),colname = c("variable","type of variable"))
+for (i in 1:ncol(auto)){ var.type[i,2]<-typeof(auto[,i]) } #apply fail to identify integer
+  
+#find out how many missing values
+var.miss<-to.df(colSums(is.na(auto)),colname = c("variable","number of missing"))
+
+#combine and format table for report
+output.table<- merge(merge(var.lab,var.miss,by="variable") 
+                    , merge(var.type,var.ex, by="variable"), by="variable")
+output.table %>%
+  kable(align = 'llccl', caption="Variable label, count of missing, variable type and example (N=250)") %>%
+  kableExtra::kable_classic(full_width = TRUE) %>%
+  kableExtra::column_spec(c(1,2,5), width = "20em") %>%
+  kableExtra::kable_styling(font_size = 10)
+
+#delete Other Vehicle and Injury columns since they have no observations
+auto <- auto[,-which(colnames(auto) %in% c("injury","other vehicle"))]
+
+#Note: Weather, lighting, road conditions, and unusual conditions have 67 missing observations, but we have access to the pdf accident reports, so we will be able to go through and fill in most of these later.
+
+#Note: Only 3 missing observations can be filled since old reports did not contain the missing variables at all.
+
+#fill in missing variables for observation 34
+auto$road_cond[34]="Dry"
+auto$lighting[34]="Daylight"
+auto$unusual_cond[34]="No"
+
+#fill in missing variables for observation 149
+auto$weather[149]="Clear"
+auto$road_cond[149]="Dry"
+auto$lighting[149]="Daylight"
+auto$unusual_cond[149]="No"
+
+#fill in missing variables for observation 204
+auto$weather[204]="Clear"
+auto$road_cond[204]="Dry"
+auto$lighting[204]="Daylight"
+auto$unusual_cond[204]="No"
+```
+
+
+```{r, warning=FALSE}
+# Split car_type column into car year, make, and model columns
+# Convert Lighting to upper case to fix issues with similar values with different casing
+# Add a damage column that has categories combined for use in modeling
+
+# Function to parse numbers out of a string
+numextract <- function(string){ 
+  str_extract(string, "\\-*\\d+\\.*\\d*")
+} 
+
+auto <- auto %>% dplyr::mutate(car_year=numextract(car_type),
+                        car_make_model=str_trim(tm::removeNumbers(car_type)),
+                        lighting = toupper(lighting),
+                        damage_level = case_when(damage %in% c('significant', 'major', 'moderate')~'moderate or more', TRUE~damage))
+auto <- auto %>% tidyr::separate(car_make_model, into = c("car_make", "car_model"), sep = "\\s")
+
+# Volvo shows up as two different spellings
+auto <- auto %>% mutate(car_make = case_when(car_make=='volvo' ~ 'Volvo', TRUE~car_make))
+car_model_chart <- auto %>% dplyr::group_by(car_model)%>% dplyr::summarize(ct=n())
+```
+
+```{r, warning=FALSE}
+#fix typo in single cell (originally coded as "moivng")
+auto$stopped_av[248]="moving"
+
+#convert var types
+auto$date <- as.Date(auto$date, format = "%m/%d/%y")
+auto[c(3:5,7:13,15,16)] <- lapply(auto[c(3:5,7:13,15,16)], factor)
+
+#add day, month, and year columns
+auto<-transform(auto, day = weekdays(auto$date))
+auto$day<-factor(auto$day, levels = c("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"), ordered=TRUE)
+
+auto<-transform(auto, month = months(auto$date))
+auto$month<-factor(auto$month, levels = c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"), ordered=TRUE)
+
+auto<-transform(auto, year = substring(auto$date,1,4))
+auto$year<-as.factor(auto$year)
+
+auto$damage_level <-factor(auto$damage_level, levels=c("none", "minor", "moderate or more"), ordered=TRUE)
+
+#combine levels of damage to get binary variable
+auto$damage_flg <- ifelse(auto$damage_level == "none",  0, 1)
+auto$damage_flg <- ordered(auto$damage_flg, levels = c(0,1), labels = c("No", "Yes"))
+```
+
+
+## Exploratory Data Analysis Summary
+
+
+## Relationships between damage and other variables
+
+The variables weather, autonomous engaged, and conditions look like they could be useful to predict accident severity. As previously discussed, the other variables may prove to be more useful once they are condensed into fewer categories.
+
+```{r, fig.show='hold', out.width="50%", warning=FALSE}
+
+# Create plots of variables against Damage
+
+var_list <- list("company", "autonomous_engaged", "weather", "road_cond", "lighting", "unusual_cond", "stopped_av", "stopped_nonav", "car_make", "car_year", "car_model", "day", "year", "damage_type")
+par(mfrow=c(2,7))
+for (var in var_list) {
+  print(ggplot(auto, aes(x = auto[[var]], 
+           fill = damage_flg)) + 
+           geom_bar(position = "dodge")+
+           labs(fill="Damage", x=var))
+}
+```
+
+
+We also explored whether there was any temporal pattern in collision accidents. Most of accidents in this dataset occurred in 2019, most likely driven by commercialization of the technology and availability of the report. More accidents occurred during weekdays than weekends. October had the highest count of accidents while fewer accidents were in February-April and December.  
+
+```{r, fig.show='hold', out.width="33%", warning=FALSE}
+ggplot(auto, aes(day)) + geom_bar(color="black", fill="skyblue") + 
+    theme(axis.text.x = element_text(angle = 90), legend.position="none")
+ggplot(auto, aes(month)) + geom_bar(color="black", fill="skyblue") + 
+    theme(axis.text.x = element_text(angle = 90), legend.position="none")
+ggplot(auto, aes(year)) + geom_bar(color="black", fill="skyblue") + 
+    theme(axis.text.x = element_text(angle = 90), legend.position="none")
+```
+
+
+## Plots of Variable Relationships
+
+There appears to be more accidents involving autonomous vehicles in the most recent years, but this makes sense as we previously saw that most the data is from 2019. There doesn't appear to be much a pattern between amount of damage and whether autonomous mode was engaged.  
+
+The most common type of accident is rear-end, and based on the amount of green points, it is typically the non-autonomous vehicle that hit the autonomous vehicle. So far, autonomous vehicles have not been designed to avoid accidents that are the fault of another vehicle, so this makes sense.  
+
+```{r, fig.show='hold', out.width="50%", warning=FALSE}
+ggplot(auto, aes(x=stopped_nonav, y=stopped_av)) +
+  geom_jitter(width=0.4, height=0.4, aes(color=damage_flg), alpha=0.5, size=2) + 
+  ggtitle("Motion of Vehicles in Accident") + xlab("Non-Autonoumous Vehicle") + ylab("Autonomous Vehicle")
+
+ggplot(auto, aes(x=road_cond, y=stopped_av)) +
+  geom_jitter(width=0.4, height=0.4, aes(color=damage_flg), alpha=0.5, size=2) + 
+  ggtitle("Road Condition in Accident") + xlab("Road Condition") + ylab("Autonomous Vehicle")
+```
+When autonomous driving was engaged, it was more likely that there was no damage or minor damage. 
+```{r}
+table(auto$autonomous_engaged,auto$damage_flg) %>% 
+  kable() %>% kableExtra::kable_classic()
+```
+
+
+## Run a simple tree algorithm
+The tree indicates that the variables that are most predictive of whether there is damage are company, car year, whether the AV was stopped, and lighting. 
+
+```{r}
+set.seed(4)
+tree.damage = tree(data = auto, damage_flg~year + company + damage_type + autonomous_engaged+weather+road_cond+lighting+unusual_cond+stopped_av+stopped_nonav+car_year+car_make+car_model)
+summary(tree.damage)
+```
+
+```{r, fig.width=10, fig.height=3, fig.align='center'}
+# display the regression tree
+plot(tree.damage, type = "uniform")
+
+# add text to the tree 
+text(tree.damage)
+```
+
+### Examine tree rules
+The rules appear to indicate that Zoox has low damage rates. Additionally, earlier model year AVs seem to be at higher risk of damage. Note: since 'Yes' is more common than 'No' in the damage flag, this is being predicted for both leaves at the splits. However, looking at the different base rates is still informative. For instance, for lighting Daylight vs. Dark/Dusk, "Yes" is predicted for both leaves, but dark/dusk has a higher rate of damage.
+```{r}
+# display the regression tree
+tree.damage
+```
+
+Examine the company variable more closely. Zoox does have the lowest damage rate of all the companies. Of 20 reported accidents, only 65% had damage, which is the lowest of all companies.
+
+```{r}
+auto$damage_flg_dummy <- as.integer(auto$damage_flg)-1
+auto %>% dplyr::group_by(company) %>% dplyr::summarize(ct=n(), damage_rt = mean(damage_flg_dummy)) %>% subset(ct > 10) %>% arrange(damage_rt)
+# Calculate for others
+auto %>% subset(!(company %in% c('Zoox', 'Cruise', 'Waymo'))) %>% dplyr::summarize(ct=n(), damage_rt = mean(damage_flg_dummy)) 
+# Calculate total
+auto %>% dplyr::summarize(ct=n(), damage_rt = mean(damage_flg_dummy)) 
+```
+
+## Random Forest
+Since some of these variables are correlated with each other, we can take advantage of some properties of the random forest. Since random forest forces some variables to be left out of the models, it will help identify importance even if a variable is correlated to a strong predictor. 
+
+The random forest still picked up company as the most important variable and lighting as an important variable. However, it also picked up the autonomous engaged, weather, road conditions variables, which were not picked up in the regular tree. These were more important than lighting, unusual conditions, car year, and stopped AV, which were picked up in the other tree model. 
+
+The tree models seem to indicate that company, AV engaged, car year, weather, road conditions, lighting, unusual conditions, and stopped AV should all be considered as candidate predictors.
+```{r}
+set.seed(1)
+require(randomForest)
+rf.damage= randomForest(damage_flg~company + damage_type + autonomous_engaged+weather+road_cond+lighting+unusual_cond+stopped_av+stopped_nonav+car_year+car_make+car_model,data=auto, importance =TRUE, na.action=na.omit)
+importance (rf.damage)
+```
+```{r}
+rf.damage
+```
+# company, car_make, stopped_av, car_year, car_model, unusual_cond
+```{r, fig.width=10, fig.height=4, fig.align='center'}
+varImpPlot (rf.damage)
+```
+
+
+## Variable Selection by Stepwise Regression
+```{r}
+#Change variable types
+auto$day <- factor(auto$day, order=FALSE)
+auto$month <- factor(auto$month, order=FALSE)
+auto$damage_flg <- factor(auto$damage_flg, order=FALSE)
+auto$car_year <- factor(auto$car_year)
+auto$car_model <- factor(auto$car_model)
+auto$car_make <- factor(auto$car_make)
+#Collapse some factor levels
+auto$company <- fct_collapse(auto$company, Other = c("AI Motive", "Apple", "Aurora", "Drive AI", "Jingchi", "Lyft", "Nissan", "Pony AI", "Toyota", "UATC"))
+auto$car_make <- fct_collapse(auto$car_make, Other = c("Ford", "Google", "Lincoln", "Nissan", "Volvo"))
+auto$car_model <- fct_collapse(auto$car_model, Other = c("Fusion", "Leaf", "Prius"))
+#Get rid of useless or redundant variables
+#Note: Got rid of error variable since so many NAs
+stepauto <- auto[-c(1,2,4,13,14,16,20,25)]
+#Omit observations with missing values
+stepauto <- na.omit(stepauto)
+#Fit the null model
+null.model <- glm(damage_flg~1, data = stepauto, family = "binomial")
+#Fit the full model 
+full.model <- glm(damage_flg~., data = stepauto, family = "binomial")
+full <- formula(glm(damage_flg~., data = stepauto, family = "binomial"))
+#Stepwise regression in each direction
+backward.model <- stepAIC(full.model, direction = "backward", trace = FALSE)
+formula(backward.model)
+forward.model <- stepAIC(null.model, direction = "forward", scope=list(lower=formula(null.model),upper=formula(full.model)), trace = FALSE)
+formula(forward.model)
+both.model <- stepAIC(full.model, direction = "both", trace = FALSE)
+formula(both.model)
+```
+
+## Model Building
+#### Example anova test
+```{r}
+#test whether car_year is useful in the model
+df <- subset(auto, !is.na(car_year)) 
+reduced <- glm(damage_flg ~ company + stopped_av + damage_type, data = df, family = "binomial")
+full <- glm(damage_flg ~ company + stopped_av + damage_type + car_year, data = df, family = "binomial")
+anova(reduced,full, test="LRT")
+#Not useful to add car_year
+summary(reduced)
+```
+
+#### Checking for useful predictors versus intercept only model
+```{r}
+null <- glm(damage_flg ~ 1 , data = auto, family = "binomial")
+
+#Checking if stopped_av is useful
+full.3 <- glm(damage_flg ~  stopped_av, data = auto, family = "binomial")
+anova(null,full.3, test="LRT")
+
+#Creating company variable for levels based on tree
+auto$new_company <- fct_collapse(auto$company, Other = c("Waymo", "Other"))
+#Checking if new company variable is a useful
+full.5 <- glm(damage_flg ~  new_company, data = auto, family = "binomial")
+anova(null,full.5, test="LRT")
+
+#Checking if autonomous_engaged is a useful
+full.6 <- glm(damage_flg ~  autonomous_engaged, data = auto, family = "binomial")
+anova(null,full.6, test="LRT")
+
+#Checking if car_year is a useful
+nullcar_year <- glm(damage_flg ~ 1 , data = df, family = "binomial")
+full.7 <- glm(damage_flg ~  car_year, data = df, family = "binomial")
+anova(nullcar_year,full.7, test="LRT")
+
+#Checking if year is a useful
+full.8 <- glm(damage_flg ~  year, data = auto, family = "binomial")
+anova(null,full.8, test="LRT")
+
+#Checking if lighting is a useful
+df2 <- subset(auto, !is.na(lighting)) 
+nulllight <- glm(damage_flg ~ 1 , data = df2, family = "binomial")
+full.9 <- glm(damage_flg ~  lighting, data = df2, family = "binomial")
+anova(nulllight,full.9, test="LRT")
+```
+
+Conclusion from  intercept only models: stopped_av, autonomous_engaged, and lighting are not useful when added to the intercept-only model and so will likely not be useful when added to models with other predictors already present
+
+
+# Selecting Final Model
+```{r}
+mod0 <- glm(damage_flg ~ new_company, data = auto, family = "binomial")
+mod1 <- glm(damage_flg ~ new_company + damage_type, data = auto, family = "binomial")
+anova(mod0,mod1, test="LRT")
+
+mod2 <- glm(damage_flg ~ new_company + damage_type + year, data = auto, family = "binomial")
+anova(mod1,mod2, test="LRT")
+summary(mod2)
+car::vif(mod2)
+```
+
+
