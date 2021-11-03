@@ -1,0 +1,258 @@
+---
+title: "Stats 6500 Exploratory Data Analysis- Autonomous Vehicle Accidents"
+author: Charmchi Toosi, Shahrzad; Chu, Yue; Heider, Jennifer E.; Lin, Yue; Smillie,
+  Katie;
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+fontsize: 11pt
+geometry: margin = 1in
+header-includes:
+- \usepackage{fancyhdr}==
+- \usepackage{lastpage}
+- \usepackage{setspace}\doublespacing
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set( echo=FALSE, message = FALSE)
+get.element <- function(list, n){
+         sapply(list, `[`, n)}
+```
+
+
+# Background
+
+- Development of autopilot features of cars.
+- Debates around the technology and concerns on safety of autopilot technology.
+
+# Key research question
+
+In this study, we aim to evaluate the safety of autonomous vehicles using a dataset of collision reports. 
+
+# Data
+
+The California DMV autonomous vehicle collision accident reports were publicly available via [DMV website](https://www.dmv.ca.gov/portal/vehicle-industry-services/autonomous-vehicles/autonomous-vehicle-collision-reports/). A compiled dataset with accidents from Jan.2016 to Feb. 2020 was found on [github](https://github.com/Jcressey10/Thesis). The variables in the dataset is shown below.
+
+
+```{r load-packages, include=FALSE}
+#load packages
+packages <- c("tidyverse","plyr","dplyr","stats","tidyr" #data processing
+              ,"ggplot2","ggforce" #plot
+              ,"knitr","kableExtra" #table
+              ,"tm","tidytext","SnowballC","pdftools","swirl","knitr" #web scraping and text analysis
+              ,"rvest","stringr","staplr" #pdf data processing
+              ,"reticulate" #python
+              ,"MASS","ISLR","class", "stringr", "tm" #ML
+              )
+
+#new.packages <- packages[!(packages %in% installed.packages()[,"Package"])]
+#if(length(new.packages)) install.packages(new.packages)
+suppressMessages(lapply(packages, require, character.only = TRUE))
+
+```
+```{r}
+ 
+substr.rml<-function(x,n){
+  substr(x,1,nchar(x)-n)
+}
+
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+# Read in dataset
+library(readr)
+urlfile="https://raw.githubusercontent.com/Jcressey10/Thesis/master/AutonomousD.csv"
+auto<-read_csv(url(urlfile))
+```
+
+```{r}
+variables <- data.frame(
+  Variable = c("Date","Address","Car.type","Company","Autonomous","Time","Weather","Road.condition",
+               "Lighting","Unusual.conditions","Stop.moving1","Stop.moving2","Other.vehicle","Damage",
+               "Significance","Injury","Explanation","Error"),
+  Label = c("Date of accident","Address of accident","Type of car","Make of car",
+            "Whether autonomous vehicle is engaged(1=yes,0=no)","Time of accident",
+            "Weather condition when the accident occurred","Road condition","Lighting condition",
+            "Other unusual conditions","Whether the vehicle stopped or was moving",
+            "Whether the other vehicle stopped or was moving","[All N/A]","How severe the damage was",
+            "Effect on human","[All N/A]","Type of collision","AV or non-AV fault"))
+
+kable(variables)
+```
+
+# Data Preparation
+
+The variables Injury and Other Vehicle will be excluded because they are completely missing. Weather, lighting, road conditions, and unusual conditions all have 67 missing observations. The original PDF accident reports will be used later to fill in the missing values. Variables with spaces in the names will be renamed for ease of use in R.
+
+```{r}
+#find out how many missing values
+colSums(is.na(auto))
+
+#delete Other Vehicle and Injury columns since they have no observations
+auto <- auto[,-c(12,16)]
+
+#Note: Weather, lighting, road conditions, and unusual conditions have 67 missing observations, but we have access to the pdf accident reports, so we will be able to go through and fill in most of these later.
+
+#investigate variable types
+str(auto)
+
+#rename columns (to make them easier to work with in R and to make more appropriate names for some)
+colnames(auto) <- c("date","address","company","car_type","autonomous_engaged","time","weather","road_cond","lighting","unusual_cond","stopped_av","stopped_nonav","damage","explanation","damage_type","error")
+
+```
+
+
+The column car_type includes information on vehicle year, make, and model. This was split into 3 separate columns for analysis. Misspelling and case differences in Lighting, stopped_av, were also corrected.
+
+
+```{r}
+# Split car_type column into car year, make, and model columns
+# Convert Lighting to upper case to fix issues with similar values with different casing
+
+# Function to parse numbers out of a string
+numextract <- function(string){ 
+  str_extract(string, "\\-*\\d+\\.*\\d*")
+} 
+
+auto <- auto %>% dplyr::mutate(car_year=numextract(car_type),
+                        car_make_model=str_trim(tm::removeNumbers(car_type)),
+                        lighting = toupper(lighting))
+auto <- auto %>% tidyr::separate(car_make_model, into = c("car_make", "car_model"), sep = "\\s")
+
+# Volvo shows up as two different spellings
+auto <- auto %>% mutate(car_make = case_when(car_make=='volvo' ~ 'Volvo', TRUE~car_make))
+auto %>% head()
+auto %>% dplyr::group_by(car_model)%>% dplyr::summarize(ct=n())
+```
+
+```{r}
+#fix typo in single cell (originally coded as "moivng")
+auto$stopped_av[248]="moving"
+
+#convert var types
+auto$date <- as.Date(auto$date, format = "%m/%d/%y")
+auto[c(3:5,7:13,15,16)] <- lapply(auto[c(3:5,7:13,15,16)], factor)
+
+#add day, month, and year columns
+auto<-transform(auto, day = weekdays(auto$date))
+auto$day<-factor(auto$day, levels = c("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"), ordered=TRUE)
+
+auto<-transform(auto, month = months(auto$date))
+auto$month<-factor(auto$month, levels = c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"), ordered=TRUE)
+
+auto<-transform(auto, year = substring(auto$date,1,4))
+auto$year<-as.factor(auto$year)
+```
+
+
+## Make some tables
+For analysis of autonomous vehicle safety, the fields indicating damage level and type, whether autononomous driving was engaged, autonomous vehicle errors, and whether the autonomous vehicle was determined to be at fault appear to be interesting. Looking at the count tables, most of the damage was minor, with rear-end being the most common followed by sideswipe. Autonomous was engaged for most accidents, but AV was flagged as not as fault for most accidents. 
+
+Predictor variable sparsity will be a challenge in this dataset. Most of the accident records are from clear days, during daylight, with dry road conditions. Bolts make up the large proportion of car models, followed by Pacifica. 
+```{r}
+
+table(auto$damage,auto$damage_type,dnn="Damage")
+table(auto$autonomous_engaged, auto$error, dnn="Autonomous Engaged")
+table(auto$company, dnn="Company")
+table(auto$car_type, dnn="Car Type")
+table(auto$car_make, dnn="Car Make")
+table(auto$car_model, dnn="Car Model")
+table(auto$car_year, dnn="Car Year")
+table(auto$weather, dnn="weather")
+table(auto$road_cond, dnn="Road Conditions")
+table(auto$lighting, dnn="Lighting")
+table(auto$unusual_cond, dnn="Lighting")
+table(auto$stopped_av,auto$stopped_nonav, dnn="Stopped AV")
+table(auto$day, dnn="Day")
+table(auto$month, dnn="Month")
+table(auto$year, dnn="Year")
+```
+## Barplots of Factor Variables
+Most of the variables in this dataset are categorical. Since some of the categories are low count, it might be useful in modeling to consolidate low frequency categories as "Other". For example, car make has high record counts for Chevrolet, Chrsysler, Toyota, and Lexus, but Nissan, Lincoln, Volvo, Google, and Ford occur infrequently. 
+
+
+```{r, fig.width=12, fig.height=12}
+auto %>%
+  gather(-date, -address, -car_type, -time, -explanation, -day, -month, -year, key = "var", value = "value") %>%
+  ggplot(aes(x = value)) +
+    geom_bar(color="black", fill="skyblue") +
+    facet_wrap(~ var, scales = "free", ncol = 4) + 
+    theme(axis.text.x = element_text(angle = 90), legend.position="none")
+```
+Most of the data in this dataset is from 2019. Thursday was the most common day for accidents, and October had the highest count of accidents.
+```{r, fig.show='hold', out.width="33%"}
+ggplot(auto, aes(day)) + geom_bar(color="black", fill="skyblue") + 
+    theme(axis.text.x = element_text(angle = 90), legend.position="none")
+ggplot(auto, aes(month)) + geom_bar(color="black", fill="skyblue") + 
+    theme(axis.text.x = element_text(angle = 90), legend.position="none")
+ggplot(auto, aes(year)) + geom_bar(color="black", fill="skyblue") + 
+    theme(axis.text.x = element_text(angle = 90), legend.position="none")
+```
+
+
+## Plots of Variable Relationships
+```{r, fig.align='center', fig.width=10}
+ggplot(auto, aes(x=date, y=damage)) + 
+  geom_jitter(width=0, height=0.3, aes(color=autonomous_engaged), alpha=0.5, size=2) + 
+  ggtitle("Severity of Damage by Date") + xlab("Date") + ylab("Damage Severity")
+
+ggplot(auto, aes(x=damage_type, y=damage)) +
+  geom_jitter(width=0.3, height=0.3, aes(color=error, shape=autonomous_engaged), alpha=0.5, size=2) + 
+  ggtitle("Severity of Damage by Type") + xlab("Type of Damage") + ylab("Damage Severity")
+
+ggplot(auto, aes(x=stopped_nonav, y=stopped_av)) +
+  geom_jitter(width=0.4, height=0.4, aes(color=autonomous_engaged), alpha=0.5, size=2) + 
+  ggtitle("Motion of Vehicles in Accident") + xlab("Non-Autonoumous Vehicle") + ylab("Autonomous Vehicle")
+
+ggplot(auto, aes(x=road_cond, y=stopped_av)) +
+  geom_jitter(width=0.4, height=0.4, aes(color=autonomous_engaged), alpha=0.5, size=2) + 
+  ggtitle("Road Condition in Accident") + xlab("Road Condition") + ylab("Autonomous Vehicle")
+
+ggplot(auto, aes(x=weather, y=stopped_av)) +
+  geom_jitter(width=0.4, height=0.4, aes(color=lighting), alpha=0.5, size=2) + 
+  ggtitle("Weather and lighting Condition in Accident") + xlab("Weather") + ylab("Autonomous Vehicle")
+
+ggplot(auto, aes(x=lighting, y=stopped_av)) +
+  geom_jitter(width=0.4, height=0.4, aes(color=damage), alpha=0.5, size=2) + 
+  ggtitle("Lighting Condition in Accident") + xlab("Lighting") + ylab("Autonomous Vehicle")
+
+
+ggplot(auto, aes(x=time, y=autonomous_engaged)) +
+  geom_jitter(width=0.4, height=0.4, alpha=0.5, size=2) + 
+  ggtitle("Autonomous Vehicles Performance in Peak hours & Congestion") + xlab("Time of the Day") + ylab("Autonomous Vehicle")
+```
+
+## Examine relationships between damage and other variables
+
+The variables weather, autonomous engaged, and conditions look like they could be useful to predict accident severity. As previously discussed, he other variables may prove to be more useful once they are condensed into fewer categories.
+```{r}
+
+# Create plots of variables against Damage
+
+var_list <- list("company", "autonomous_engaged", "weather", "road_cond", "lighting", "unusual_cond", "stopped_av", "stopped_nonav", "car_make", "car_year", "car_model", "day", "year")
+
+for (var in var_list) {
+  print(ggplot(auto, 
+       aes(x = damage, 
+           fill = auto[[var]])) + 
+           geom_bar(position = "fill")+
+           labs(fill=var))}
+```
+
+## Examine relationships between error and other predictors
+Weather and lighting look like they could be useful for predicting autonomous vehicle errors. 
+
+```{r}
+# Plot variables against Error
+for (var in var_list) {
+  print(ggplot(auto, 
+       aes(x = error, 
+           fill = auto[[var]])) + 
+           geom_bar(position = "fill") +
+           labs(fill=var))}
+```
+
